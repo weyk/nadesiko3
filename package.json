@@ -108,7 +108,7 @@
     "@babel/preset-react": "^7.16.7",
     "@chiragrupani/karma-chromium-edge-launcher": "^2.2.1",
     "@textlint-ja/textlint-rule-no-insert-dropping-sa": "^2.0.1",
-    "@types/mocha": "^9.1.0",
+    "@types/mocha": "^10.0.0",
     "babel-loader": "^8.2.5",
     "buffer": "^6.0.3",
     "chai": "^4.3.6",
