@@ -15,6 +15,8 @@ import { NakoGlobal } from '../core/src/nako_global.mjs'
 import nakoVersion from './nako_version.mjs'
 
 import PluginNode from './plugin_node.mjs'
+import PluginBrowser from './plugin_browser.mjs'
+
 import app from './commander_ja.mjs'
 import fetch from 'node-fetch'
 
@@ -24,6 +26,61 @@ import { NakoGenOptions } from '../core/src/nako_gen.mjs'
 import url from 'url'
 const __filename = url.fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
+
+
+const srcDir:{'src':string,'coresrc':string,'release':string} = {
+  'src': __dirname,
+  'coresrc': path.join(__dirname, '..', 'core', 'src'),
+  'release': path.join(__dirname, '..', 'release')
+}
+
+type StandAloneFiles = {
+  fromDir: keyof typeof srcDir
+  commonFiles:string[]|null
+  nodeFiles:string[]|null
+  webFiles:string[]|null
+}
+
+type TargetKey = keyof StandAloneFiles
+
+// stonadaloneコード生成コードから取り込む必要のあるファイル
+const standalone_files:StandAloneFiles[] = [
+  {
+    fromDir: 'src',
+    commonFiles: ['nako_version.mjs'],
+    nodeFiles: null,
+    webFiles: null
+  },
+  {
+    fromDir: 'coresrc',
+    commonFiles: [
+      'nako_core_version.mjs', 'nako_errors.mjs',
+      'plugin_system.mjs', 'plugin_math.mjs', 'plugin_promise.mjs',
+      'plugin_test.mjs', 'plugin_csv.mjs', 'nako_csv.mjs'],
+    nodeFiles: null,
+    webFiles: null
+  },
+  {
+    fromDir: 'release',
+    commonFiles: null,
+    nodeFiles: ['plugin_node.mjs'],
+    webFiles: ['plugin_browser.js']
+  }
+]
+
+// stonadaloneコード生成コードから取り込む必要のあるmodule
+// Webpackでplugin_nodeにまとめる場合はnodeFilesは不要になる。
+// Webpackでplugin_browserにまとめる場合はwebFilesは不要になる。
+// 上記のどちらも不要であればnullとすることが可能
+const standalone_modules: null|StandAloneFiles = null
+/*
+{
+  fromDir: 'modules',
+  commonFiles: null,
+  nodeFiles: ['fs-extra', 'iconv-lite', 'opener', 'node-fetch', 'shell-quote'],
+  webFiles: ['hotkeys-js']
+}
+*/
 
 /** コマンドラインアクション */
 interface CNako3ArgOptions {
@@ -39,8 +96,10 @@ interface CNako3ArgOptions {
   mainfile: any | string
   man: string
   browsers: boolean
+  generator: string
   ast: boolean
   lex: boolean
+  web: boolean
 }
 
 interface CNako3Options {
@@ -51,15 +110,14 @@ interface CNako3Options {
 export class CNako3 extends NakoCompiler {
   debug: boolean
   version: string
+  pluginstd: boolean
 
   constructor (opts:CNako3Options = { nostd: false }) {
     super({ useBasicPlugin: !opts.nostd })
     this.debug = false
+    this.pluginstd = !opts.nostd
     this.filename = 'main.nako3'
     this.version = nakoVersion.version
-    if (!opts.nostd) {
-      this.addPluginFile('PluginNode', path.join(__dirname, 'plugin_node.mjs'), PluginNode)
-    }
     // 必要な定数を設定
     this.addListener('beforeRun', (g: NakoGlobal) => {
       g.__varslist[0]['ナデシコ種類'] = 'cnako3'
@@ -92,6 +150,8 @@ export class CNako3 extends NakoCompiler {
       .option('-b, --browsers', '対応機器/Webブラウザを表示する')
       .option('-m, --man [command]', 'マニュアルを表示する')
       .option('-p, --speed', 'スピード優先モードの指定')
+      .option('-g, --generator [file]', '指定したファイルをGeneratorとして取り込む')
+      .option('-W, --web', 'ブラウザ用の基本pluginを指定(指定が無ければnode用)')
       .option('-A, --ast', '構文解析した結果をASTで出力する')
       .option('-X, --lex', '字句解析した結果をJSONで出力する')
       // .option('-h, --help', '使い方を表示する')
@@ -128,9 +188,11 @@ export class CNako3 extends NakoCompiler {
       repl: app.repl || false,
       test: app.test || false,
       browsers: app.browsers || false,
+      generator: app.generator || '',
       speed: app.speed || false,
       ast: app.ast || false,
-      lex: app.lex || false
+      lex: app.lex || false,
+      web: app.web
     }
     args.mainfile = app.args[0]
     args.output = app.output
@@ -172,6 +234,19 @@ export class CNako3 extends NakoCompiler {
       this.cnakoBrowsers()
       return
     }
+
+    if (this.pluginstd) {
+      if (opt.web) {
+        this.addPluginFile('PluginBrowser', path.join(__dirname, 'plugin_browser.mjs'), PluginBrowser)
+      } else {
+        this.addPluginFile('PluginNode', path.join(__dirname, 'plugin_node.mjs'), PluginNode)
+      }
+    }
+
+    if (opt.generator) {
+      await this.addGenerator(opt.generator)
+    }
+
     // REPLを実行する
     if (opt.repl) {
       this.cnakoRepl(opt)
@@ -246,50 +321,67 @@ export class CNako3 extends NakoCompiler {
     // JSにコンパイル
     const genOpt = new NakoGenOptions(
       isTest,
-      ['plugin_node.mjs'],
+      opt.web ? ['plugin_browser.js'] : ['plugin_node.mjs'],
       'self.__varslist[0][\'ナデシコ種類\']=\'cnako3\';'
     )
+
+    if (opt.web) {
+      genOpt.importFiles = genOpt.importFiles.map((file) => {
+        return file.replace(/\.mjs$/, '.js')
+      })
+    }
+
     const jscode = this.compileStandalone(src, this.filename, genOpt)
     console.log(opt.output)
     fs.writeFileSync(opt.output, jscode, 'utf-8')
 
-    // 実行に必要なファイルをコピー
-    const nakoRuntime = __dirname
+    // 実行に必要なファイル・モジュール一式をコピー
     const outRuntime = path.join(path.dirname(opt.output), 'nako3runtime')
     if (!fs.existsSync(outRuntime)) { fs.mkdirSync(outRuntime) }
-    // from ./src
-    for (const mod of ['nako_version.mjs', 'plugin_node.mjs']) {
-      fs.copyFileSync(path.join(nakoRuntime, mod), path.join(outRuntime, mod))
-    }
-    // from nadesiko3core/src
-    const srcDir = path.join(__dirname, '..', 'core', 'src')
-    const baseFiles = ['nako_errors.mjs', 'nako_core_version.mjs',
-      'plugin_system.mjs', 'plugin_math.mjs', 'plugin_promise.mjs', 'plugin_test.mjs', 'plugin_csv.mjs', 'nako_csv.mjs']
-    for (const mod of baseFiles) {
-      fs.copyFileSync(path.join(srcDir, mod), path.join(outRuntime, mod))
-    }
-    // or 以下のコピーだと依存ファイルがコピーされない package.jsonを見てコピーする必要がある
-    const orgModule = path.join(__dirname, '..', 'node_modules')
-    const dirNodeModules = path.join(path.dirname(opt.output), 'node_modules')
-    const modlist = ['fs-extra', 'iconv-lite', 'opener', 'node-fetch', 'shell-quote']
-    const copied: { [key: string]: boolean } = {}
-    // 再帰的に必要なモジュールをコピーする
-    const copyModule = (mod: string) => {
-      if (copied[mod]) { return }
-      copied[mod] = true
-      // ライブラリ自身をコピー
-      fse.copySync(path.join(orgModule, mod), path.join(dirNodeModules, mod))
-      // 依存ライブラリをコピー
-      const packageFile = path.join(orgModule, mod, 'package.json')
-      const jsonStr = fs.readFileSync(packageFile, 'utf-8')
-      const jsonData = JSON.parse(jsonStr)
-      // サブモジュールをコピー
-      for (const smod in jsonData.dependencies) {
-        copyModule(smod)
+
+    // 実行に必要なファイルのコピーを行う
+    const targetKeys:TargetKey[] = ['commonFiles', opt.web ? 'webFiles' : 'nodeFiles']
+    for (const filesInfo of standalone_files) {
+      for (const targetKey of targetKeys) {
+        const item = filesInfo[targetKey]
+        if (item !== null) {
+          for (const mod of item) {
+            const dest = opt.web ? mod.replace(/\.mjs$/, '.js') : mod
+            fs.copyFileSync(path.join(srcDir[filesInfo.fromDir], mod), path.join(outRuntime, dest))
+          }
+        }
       }
     }
-    for (const mod of modlist) {
-      copyModule(mod)
+
+    // 実行に必要なモジュールのコピーを行う
+    if (standalone_modules !== null) {
+      for (const targetKey of targetKeys) {
+        const modlist = standalone_modules[targetKey]
+        if (modlist !== null) {
+          // or 以下のコピーだと依存ファイルがコピーされない package.jsonを見てコピーする必要がある
+          const orgModule = path.join(__dirname, '..', 'node_modules')
+          const dirNodeModules = path.join(path.dirname(opt.output), 'node_modules')
+          const copied: { [key: string]: boolean } = {}
+          // 再帰的に必要なモジュールをコピーする
+          const copyModule = (mod: string) => {
+            if (copied[mod]) { return }
+            copied[mod] = true
+            // ライブラリ自身をコピー
+            fse.copySync(path.join(orgModule, mod), path.join(dirNodeModules, mod))
+            // 依存ライブラリをコピー
+            const packageFile = path.join(orgModule, mod, 'package.json')
+            const jsonStr = fs.readFileSync(packageFile, 'utf-8')
+            const jsonData = JSON.parse(jsonStr)
+            // サブモジュールをコピー
+            for (const smod in jsonData.dependencies) {
+              copyModule(smod)
+            }
+          }
+          for (const mod of modlist) {
+            copyModule(mod)
+          }
+        }
+      }
     }
 
     if (opt.run) {
@@ -298,6 +390,12 @@ export class CNako3 extends NakoCompiler {
         console.log(stdout)
       })
     }
+  }
+
+  async addGenerator (generatorFile: string) {
+    const module = await import(generatorFile)
+    const gen = module.default
+    gen.selfRegister(this)
   }
 
   // ワンライナーの場合
