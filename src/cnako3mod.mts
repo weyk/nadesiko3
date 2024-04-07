@@ -325,7 +325,7 @@ export class CNako3 extends NakoCompiler {
       'self.__varslist[0][\'ナデシコ種類\']=\'cnako3\';'
     )
 
-    if (opt.web) {
+    if (opt.web && false) {
       genOpt.importFiles = genOpt.importFiles.map((file) => {
         return file.replace(/\.mjs$/, '.js')
       })
@@ -346,7 +346,7 @@ export class CNako3 extends NakoCompiler {
         const item = filesInfo[targetKey]
         if (item !== null) {
           for (const mod of item) {
-            const dest = opt.web ? mod.replace(/\.mjs$/, '.js') : mod
+            const dest = ( opt.web && false ) ? mod.replace(/\.mjs$/, '.js') : mod
             fs.copyFileSync(path.join(srcDir[filesInfo.fromDir], mod), path.join(outRuntime, dest))
           }
         }
